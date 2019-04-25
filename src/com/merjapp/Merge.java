@@ -215,8 +215,7 @@ public class Merge {
 		// Increase the _id in messages by offset, and also the message_table_id
 		// field in chat_list, which refers to message numbers.
 		printToLog("Updating message IDs in new database with offset from old database");
-		executeUpdate(newSQL, "UPDATE messages SET _id = _id + " + (oldMaxID + newMaxID));
-		executeUpdate(newSQL, "UPDATE messages SET _id = _id - " + (oldMaxID + newMaxID - msgOffset));
+		executeUpdate(newSQL, "UPDATE messages SET _id = _id + " + msgOffset);
 		
 		executeUpdate(newSQL, "UPDATE chat_list SET message_table_id = message_table_id + " + msgOffset);
 
