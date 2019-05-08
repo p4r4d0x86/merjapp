@@ -26,9 +26,12 @@ public class Merge {
 	private static final String[] CHAT_LIST_UPDATE_FIELDS			= new String[] {"message_table_id",	"last_read_mesage_table_id",
 		"last_read_receipt_sent_message_table_id", "archived", "sort_timestamp"};
 
-	
+	private static final String[] OTHER_TABLES = {"message_thumbnails", "messages_quotes", "messages_links", "message_forwarded",
+			"messages_vcards", "messages_vcards_jids", "missed_call_logs"};
+		
 	private static boolean DEBUG = false;
 	private static boolean SIMULATION = false;
+	private static boolean OT = false;
 
 	private static final String OUTPUT_DATABASE		= "output.db";
 	private static final String TEMP_DATABASE		= "temp.db";
@@ -115,6 +118,11 @@ public class Merge {
 		}
 	}
 
+	/**
+	 * Call the private functions to do the merge
+	 * 
+	 * @throws Exception
+	 */
 	public void doMerge() throws Exception {
 
 		// Unite the messages in the new database and those in the old database
@@ -124,7 +132,12 @@ public class Merge {
 		oldSQL.prepareStatement("ATTACH DATABASE \"" + TEMP_DATABASE + "\" AS NEW").execute();
 
 		// Copy all messages from old database to new
-		copyMessages();
+		copyContents("messages");
+		if (OT) {
+			for (int iTable = 0; iTable < OTHER_TABLES.length; iTable++) {
+				copyContents(OTHER_TABLES[iTable]);
+			}
+		}
 
 		// Get rid of all entries in chat_list table that refer to groups in
 		// which there was no activity since the new database started to be used
@@ -133,7 +146,14 @@ public class Merge {
 		System.out.println("Done!");
 	}
 
-	private void copyMessages() throws Exception {
+	/**
+	 * Copy content from table named 'tableName' of the 'new' database to the merged one
+	 * 
+	 * @param tableName
+	 * @return
+	 * @throws Exception
+	 */
+	private void copyContents(String tableName) throws Exception {
 		// Extract names columns to see on which both old and new database agree
 		Vector<String> oldColumns = new Vector<String>();
 		Vector<String> newColumns = new Vector<String>();
@@ -141,17 +161,24 @@ public class Merge {
 		Vector<Integer> agreedOrder = new Vector<Integer>();
 		ResultSet rs;
 
+		int start;
+		if (tableName == "messages")
+			start = 2;
+		else
+			start = 1;
+		
 		// Analyze old database messages table column names
-		rs = oldSQL.executeQuery("SELECT * FROM messages LIMIT 1");
+		rs = oldSQL.executeQuery("SELECT * FROM " + tableName + " LIMIT 1");
 		ResultSetMetaData oldMetaData = rs.getMetaData();
-		for (int i = 2; i < oldMetaData.getColumnCount() + 1; i++)
+
+		for (int i = start; i < oldMetaData.getColumnCount() + 1; i++)
 			oldColumns.add(oldMetaData.getColumnName(i));
 		rs.close();
 
 		// Analyze new database messages table column names
-		rs = newSQL.executeQuery("SELECT * FROM messages LIMIT 1");
+		rs = newSQL.executeQuery("SELECT * FROM " + tableName + " LIMIT 1");
 		ResultSetMetaData newMetaData = rs.getMetaData();
-		for (int i = 2; i < newMetaData.getColumnCount() + 1; i++)
+		for (int i = start; i < newMetaData.getColumnCount() + 1; i++)
 			newColumns.add(newMetaData.getColumnName(i));
 		rs.close();
 		
@@ -175,20 +202,27 @@ public class Merge {
 		}
 
 		if (DEBUG) {
-			printToLog(oldColumns.size() + " columns in old database 'messages' table: " + joinStr(oldColumns, ", "), "DEBUG");
-			printToLog(newColumns.size() + " columns in new database 'messages' table: " + joinStr(newColumns, ", "), "DEBUG");
-			printToLog(agreedColumns.size() + " columns in agreed database 'messages' table: " + joinStr(agreedColumns, ", "), "DEBUG");
+			printToLog(oldColumns.size() + " columns in old database '" + tableName + "' table: " + joinStr(oldColumns, ", "), "DEBUG");
+			printToLog(newColumns.size() + " columns in new database '" + tableName + "' table: " + joinStr(newColumns, ", "), "DEBUG");
+			printToLog(agreedColumns.size() + " columns in agreed database '" + tableName + "' table: " + joinStr(agreedColumns, ", "), "DEBUG");
 		}
 		
-		// Copy the goddamn messages :)
+		// Copy the goddamn content :)
 		printToLog("", "");
-		printToLog("Moving messages from new database into old database!", "STAGE");
+		printToLog("Moving content of " + tableName + "'s table from new database into old database!", "STAGE");
 		String agreedFieldList = joinStr(agreedColumns, ", ");
-		executeUpdate(oldSQL, "INSERT INTO messages (" + agreedFieldList + ") SELECT " + agreedFieldList + " FROM NEW.messages");
+		executeUpdate(oldSQL, "INSERT INTO " + tableName + " (" + agreedFieldList + ") SELECT " + agreedFieldList + " FROM NEW." + tableName);
 	}
-
+	
+	/**
+	 * Prepare the 'new' database by adding an offset where required to avoid collision with 
+	 * the 'old' database during merge operation.
+	 * 
+	 * @return
+	 * @throws Exception
+	 */
 	private void prepareOldDB() throws Exception, SQLException {
-		printToLog("Preparing messages table in old database to be merged into new database...", "STAGE");
+		printToLog("Preparing messages table in new database to be merged into old database...", "STAGE");
 		ResultSet rs;
 
 		rs = oldSQL.executeQuery("SELECT MAX(_id) FROM messages");
@@ -201,7 +235,7 @@ public class Merge {
 		// Find the ID of the first message in the new database
 		rs = newSQL.executeQuery("SELECT MIN(_id), MAX(_id) FROM messages");
 		int newMinID = rs.getInt("MIN(_id)");
-		int newMaxID = rs.getInt("MAX(_id)");
+		int newMaxID = rs.getInt("MAX(_id)"); // never used except for debug
 		rs.close();
 
 		int msgOffset = oldMaxID + 1 - newMinID;
@@ -216,7 +250,6 @@ public class Merge {
 		// field in chat_list, which refers to message numbers.
 		printToLog("Updating message IDs in new database with offset from old database");
 		executeUpdate(newSQL, "UPDATE messages SET _id = _id + " + msgOffset);
-		
 		executeUpdate(newSQL, "UPDATE chat_list SET message_table_id = message_table_id + " + msgOffset);
 
 		// These two fields are only there in versions from around August 20th, 2014
@@ -238,8 +271,48 @@ public class Merge {
 		}
 
 		executeUpdate(newSQL, "DELETE FROM messages WHERE _id <= " + lastToRemove);
+		
+		
+		// Adjust offset for other tables' column(s)
+		if (OT) {
+			// For each table
+			for (int iTable = 0; iTable < OTHER_TABLES.length; iTable++) {
+				
+				rs = oldSQL.executeQuery("SELECT * FROM " + OTHER_TABLES[iTable] + " LIMIT 1");
+				ResultSetMetaData newMetaData = rs.getMetaData();
+				// For each column required
+				for (int iCol = 1; iCol <= newMetaData.getColumnCount(); iCol++) {
+					if (newMetaData.getColumnName(iCol).equals("_id")) {
+						rs = oldSQL.executeQuery("SELECT MAX(_id) FROM " + OTHER_TABLES[iTable]);
+						int tableOffset = rs.getInt("MAX(_id)");
+						printToLog("Table " + OTHER_TABLES[iTable] + " ==> Column _id ==> Offset = " + tableOffset);
+						rs.close();
+						printToLog("Updating " + OTHER_TABLES[iTable] + " IDs in new database with offset from old database");
+						executeUpdate(newSQL, "UPDATE " + OTHER_TABLES[iTable] + " SET _id = _id + " + tableOffset);
+					}
+					if (newMetaData.getColumnName(iCol).equals("message_row_id")) {
+						printToLog("Table " + OTHER_TABLES[iTable] + " ==> Column message_row_id ==> Offset = " + msgOffset);
+						executeUpdate(newSQL, "UPDATE " + OTHER_TABLES[iTable] + " SET message_row_id = message_row_id + " + msgOffset);
+					}
+					if (newMetaData.getColumnName(iCol).equals("vcard_row_id")) {
+						rs = oldSQL.executeQuery("SELECT MAX(vcard_row_id) FROM " + OTHER_TABLES[iTable]);
+						int tableOffset = rs.getInt("MAX(vcard_row_id)");
+						printToLog("Table " + OTHER_TABLES[iTable] + " ==> Column vcard_row_id ==> Offset = " + tableOffset);
+						rs.close();
+						executeUpdate(newSQL, "UPDATE " + OTHER_TABLES[iTable] + " SET vcard_row_id = vcard_row_id + " + tableOffset);
+					}
+				}
+				rs.close();
+			}
+		}
 	}
 
+	/**
+	 * Black magic / Voodoo on ChatList
+	 * 
+	 * @return
+	 * @throws Exception
+	 */
 	public void mergeChatListTable() throws Exception {
 		printToLog("", "");
 		printToLog("Merging chat list from new database to old...", "STAGE");
@@ -330,6 +403,11 @@ public class Merge {
 
 	}
 
+	/**
+	 * Open SQLite database file from path 
+	 * 
+	 * @return SQLiteJDBC object
+	 */
 	private SQLiteJDBC openDatabase(String dbPath) {
 		SQLiteJDBC sql = null;
 		try {
@@ -341,6 +419,9 @@ public class Merge {
 		return sql;
 	}
 
+	/**
+	 * Prepare global database objects (oldSQL and newSQL)
+	 */
 	private Merge(String oldDBPath, String newDBPath) {
 
 		File oldDBFile = new File(oldDBPath);
@@ -378,6 +459,9 @@ public class Merge {
 		newSQL = openDatabase(TEMP_DATABASE);
 	}
 
+	/**
+	 * Final clean flushing global objects and deleting temporary files
+	 */
 	private void cleanFiles() {
 		// Close log file
 		try {
@@ -395,6 +479,7 @@ public class Merge {
 		new File(TEMP_DATABASE).delete();
 	}
 
+	
 	public static void main(String args[]) throws Exception {
 
 		String oldDBPath = null, newDBPath = null;
@@ -404,6 +489,8 @@ public class Merge {
 				DEBUG = true;
 			else if (args[i].equalsIgnoreCase("-simulation"))
 				SIMULATION = true;
+			else if (args[i].equalsIgnoreCase("-other-tables"))
+				OT = true;
 			else if (args[i].equalsIgnoreCase("-old"))
 				oldDBPath = args[++i];
 			else if (args[i].equalsIgnoreCase("-new"))
@@ -411,7 +498,7 @@ public class Merge {
 		}
 
 		if (oldDBPath == null || newDBPath == null) {
-			System.err.println("-E- Usage: merjapp <-debug> <-simulation> -old [oldDB] -new [newDB]");
+			System.err.println("-E- Usage: merjapp <-debug> <-simulation> <-other-tables> -old [oldDB] -new [newDB]");
 			System.exit(1);
 		}
 
@@ -419,5 +506,5 @@ public class Merge {
 		merge.doMerge();
 		merge.cleanFiles();
 	}
-
+	
 }
