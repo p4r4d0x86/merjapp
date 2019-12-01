@@ -238,7 +238,7 @@ public class Merge {
 		int newMaxID = rs.getInt("MAX(_id)"); // never used except for debug
 		rs.close();
 
-		int msgOffset = oldMaxID + 1 - newMinID;
+		int msgOffset = Math.max(oldMaxID, newMaxID) + 1 - newMinID;
 
 		if (DEBUG) {
 			printToLog("Last message ID in old database is " + oldMaxID, "DEBUG");
@@ -272,6 +272,11 @@ public class Merge {
 
 		executeUpdate(newSQL, "DELETE FROM messages WHERE _id <= " + lastToRemove);
 		
+		/* TODO: update quoted_row_id in messages (references _id in messages_quotes)
+		 *       to account for the added offset
+		 *       
+		 *       Are there any others that need updating?
+		 */
 		
 		// Adjust offset for other tables' column(s)
 		if (OT) {
